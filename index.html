@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chicken Invaders</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: black;
+            text-align: center;
+        }
+        canvas {
+            display: block;
+            background: url('background.png') no-repeat center center;
+            background-size: cover;
+            margin: auto; /* Center the canvas */
+        }
+        #gameOverScreen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 48px;
+            font-family: Arial, sans-serif;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+        }
+        #retryButton {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 24px;
+            cursor: pointer;
+            background-color: red;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameOverScreen">
+        Game Over
+        <button id="retryButton">Retry</button>
+    </div>
+    <canvas id="gameCanvas" width="600" height="600"></canvas>
+
+    <audio id="shootSound" src="shoot.mp3"></audio>
+    <audio id="chickenHitSound" src="hit.mp3"></audio>
+    <audio id="gameOverSound" src="gameover.mp3"></audio>
+    <audio id="damageSound" src="damage.mp3"></audio> <!-- New damage sound effect -->
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const gameOverScreen = document.getElementById("gameOverScreen");
+        const retryButton = document.getElementById("retryButton");
+
+        const images = {
+            player: 'ship.png',
+            chicken: 'chicken.png',
+            bullet: 'bullet.png'
+        };
+
+        const loadedImages = {};
+        let imagesLoaded = 0;
+
+        let highScore = localStorage.getItem('highScore') || 0;
+        let canShoot = true; // Variable to track shooting ability
+
+        class Player {
+            constructor() {
+                this.x = canvas.width / 2 - 30;
+                this.y = canvas.height - 80;
+                this.width = 60;
+                this.height = 60;
+                this.speed = 5;
+                this.movingLeft = false;
+                this.movingRight = false;
+            }
+
+            move() {
+                if (this.movingLeft && this.x > 0) {
+                    this.x -= this.speed;
+                }
+                if (this.movingRight && this.x < canvas.width - this.width) {
+                    this.x += this.speed;
+                }
+            }
+
+            shoot() {
+                return {
+                    x: this.x + this.width / 2 - 5,
+                    y: this.y,
+                    width: 10,
+                    height: 20,
+                    speed: 7
+                };
+            }
+        }
+
+        class Chicken {
+            constructor() {
+                this.size = Math.random() > 0.5 ? 50 : 80;
+                this.x = Math.random() * (canvas.width - this.size);
+                this.y = -this.size;
+                this.width = this.size;
+                this.height = this.size;
+                this.baseSpeed = 1; // Base speed
+                this.speed = this.baseSpeed; // Initial speed
+            }
+
+            update() {
+                this.y += this.speed;
+            }
+
+            // Method to update speed based on score
+            updateSpeed(score) {
+                this.speed = this.baseSpeed * Math.pow(1.5, Math.floor(score / 10));
+            }
+        }
+
+        let player, chickens, bullets, score, hearts, gameOver;
+
+        function preloadImages() {
+            for (const key in images) {
+                loadedImages[key] = new Image();
+                loadedImages[key].src = images[key];
+                loadedImages[key].onload = () => {
+                    imagesLoaded++;
+                    if (imagesLoaded === Object.keys(images).length) {
+                        resetGame(); // Start the game once all images are loaded
+                    }
+                };
+            }
+        }
+
+        function resetGame() {
+            player = new Player();
+            chickens = [];
+            bullets = [];
+            score = 0;
+            hearts = 5;
+            gameOver = false;
+            gameOverScreen.style.display = "none";
+            gameLoop();
+        }
+
+        function spawnChicken() {
+            if (gameOver) return;
+            chickens.push(new Chicken());
+        }
+
+        setInterval(spawnChicken, 2000);
+
+        function update() {
+            if (gameOver) return;
+
+            player.move();
+
+            for (let c = chickens.length - 1; c >= 0; c--) {
+                const chicken = chickens[c];
+                chicken.update();
+
+                // Update chicken speed based on score
+                chicken.updateSpeed(score);
+
+                // Collision with player
+                if (
+                    player.x < chicken.x + chicken.width &&
+                    player.x + player.width > chicken.x &&
+                    player.y < chicken.y + chicken.height &&
+                    player.y + player.height > chicken.y
+                ) {
+                    chickens.splice(c, 1);
+                    hearts--;
+                    document.getElementById("damageSound").play(); // Play damage sound
+                    if (hearts <= 0) endGame();
+                    continue;
+                }
+
+                // Chicken escape
+                if (chicken.y > canvas.height) {
+                    chickens.splice(c, 1);
+                    hearts--;
+                    document.getElementById("damageSound").play(); // Play damage sound
+                    if (hearts <= 0) endGame();
+                }
+
+                // Bullet collisions
+                for (let b = bullets.length - 1; b >= 0; b--) {
+                    const bullet = bullets[b];
+                    if (
+                        bullet.x < chicken.x + chicken.width &&
+                        bullet.x + bullet.width > chicken.x &&
+                        bullet.y < chicken.y + chicken.height &&
+                        bullet.y + bullet.height > chicken.y
+                    ) {
+                        chickens.splice(c, 1); // Remove the chicken
+                        bullets.splice(b, 1);   // Remove the bullet
+                        score++;                 // Increment the score
+                        document.getElementById("chickenHitSound").play(); // Play hit sound
+                        break; // Exit the bullet loop
+                    }
+                }
+            }
+
+            // Bullet movement
+            for (let b = bullets.length - 1; b >= 0; b--) {
+                bullets[b].y -= bullets[b].speed;
+                if (bullets[b].y < 0) {
+                    bullets.splice(b, 1);
+                }
+            }
+        }
+
+        function draw() {
+            if (gameOver) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(loadedImages.player, player.x, player.y, player.width, player.height);
+            
+            chickens.forEach(chicken => {
+                ctx.drawImage(loadedImages.chicken, chicken.x, chicken.y, chicken.width, chicken.height);
+            });
+            
+            bullets.forEach(bullet => {
+                ctx.drawImage(loadedImages.bullet, bullet.x, bullet.y, bullet.width, bullet.height);
+            });
+
+            // Draw score and hearts on the canvas
+            ctx.fillStyle = "white";
+            ctx.font = "24px Arial";
+            ctx.fillText(`Score: ${score}`, 10, 30);
+            ctx.fillText(`High Score: ${highScore}`, 10, 60);
+            ctx.fillText(`Hearts: ${"❤️".repeat(hearts)}`, 10, 90);
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            if (!gameOver) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        function endGame() {
+            gameOver = true;
+            document.getElementById("gameOverSound").play(); // Play game over sound
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('highScore', highScore);
+            }
+            gameOverScreen.style.display = "flex";
+        }
+
+        window.addEventListener("keydown", (event) => {
+            if (event.key === "ArrowLeft" || event.key === "a") player.movingLeft = true;
+            if (event.key === "ArrowRight" || event.key === "d") player.movingRight = true;
+            if (event.key === " " && canShoot) { // Check if can shoot
+                bullets.push(player.shoot());
+                document.getElementById("shootSound").play(); // Play shoot sound
+                canShoot = false; // Set canShoot to false
+                setTimeout(() => {
+                    canShoot = true; // Reset canShoot after 0.3 seconds
+                }, 600); // 300 milliseconds
+            }
+        });
+
+        window.addEventListener("keyup", (event) => {
+            if (event.key === "ArrowLeft" || event.key === "a") player.movingLeft = false;
+            if (event.key === "ArrowRight" || event.key === "d") player.movingRight = false;
+        });
+
+        retryButton.addEventListener("click", resetGame);
+
+        preloadImages();
+    </script>
+</body>
+</html>
