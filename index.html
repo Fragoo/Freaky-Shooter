@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chicken Invaders</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.6.0/ethers.umd.min.js"></script>
     <style>
         body {
             margin: 0;
@@ -15,7 +16,7 @@
             display: block;
             background: url('background.png') no-repeat center center;
             background-size: cover;
-            margin: auto; /* Center the canvas */
+            margin: auto;
         }
         #gameOverScreen {
             position: absolute;
@@ -28,6 +29,7 @@
             display: none;
             flex-direction: column;
             align-items: center;
+            z-index: 1000;
         }
         #retryButton {
             margin-top: 20px;
@@ -39,9 +41,63 @@
             border: none;
             border-radius: 5px;
         }
+        #connectWallet {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            z-index: 1000;
+        }
+        #leaderboard {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            color: white;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 15px;
+            border-radius: 10px;
+            width: 300px;
+            z-index: 1000;
+        }
+        #leaderboardList {
+            list-style: none;
+            padding: 0;
+            margin: 15px 0;
+        }
+        #leaderboardList li {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            padding: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+        }
+        #submitScore {
+            margin-top: 15px;
+            width: 100%;
+            padding: 10px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
     </style>
 </head>
 <body>
+    <button id="connectWallet" onclick="connectWallet()">Connect Wallet</button>
+    <div id="leaderboard">
+        <h2 style="margin: 0 0 15px 0;">Blockchain Leaderboard</h2>
+        <ul id="leaderboardList"></ul>
+        <button id="submitScore" onclick="submitScoreToBlockchain(score)">Submit Score</button>
+    </div>
+
     <div id="gameOverScreen">
         Game Over
         <button id="retryButton">Retry</button>
@@ -51,25 +107,34 @@
     <audio id="shootSound" src="shoot.mp3"></audio>
     <audio id="chickenHitSound" src="hit.mp3"></audio>
     <audio id="gameOverSound" src="gameover.mp3"></audio>
-    <audio id="damageSound" src="damage.mp3"></audio> <!-- New damage sound effect -->
+    <audio id="damageSound" src="damage.mp3"></audio>
 
     <script>
+        // Blockchain Configuration
+        const contractAddress = "0xDA4b788A61421434d95F6169Ae35DD49BFE74941";
+        const contractABI = [
+            {"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"player","type":"address"},{"indexed":false,"internalType":"uint256","name":"score","type":"uint256"}],"name":"NewScore","type":"event"},
+            {"inputs":[{"internalType":"uint256","name":"_score","type":"uint256"}],"name":"submitScore","outputs":[],"stateMutability":"nonpayable","type":"function"},
+            {"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"bestScores","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+            {"inputs":[],"name":"getLeaderboard","outputs":[{"components":[{"internalType":"address","name":"player","type":"address"},{"internalType":"uint256","name":"score","type":"uint256"},{"internalType":"uint256","name":"timestamp","type":"uint256"}],"internalType":"struct ChickenLeaderboard.Score[]","name":"","type":"tuple[]"}],"stateMutability":"view","type":"function"},
+            {"inputs":[{"internalType":"uint256","name":"_count","type":"uint256"}],"name":"getTopScores","outputs":[{"components":[{"internalType":"address","name":"player","type":"address"},{"internalType":"uint256","name":"score","type":"uint256"},{"internalType":"uint256","name":"timestamp","type":"uint256"}],"internalType":"struct ChickenLeaderboard.Score[]","name":"","type":"tuple[]"}],"stateMutability":"view","type":"function"},
+            {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"leaderboard","outputs":[{"internalType":"address","name":"player","type":"address"},{"internalType":"uint256","name":"score","type":"uint256"},{"internalType":"uint256","name":"timestamp","type":"uint256"}],"stateMutability":"view","type":"function"}
+        ];
+
+        // Game Initialization
         const canvas = document.getElementById("gameCanvas");
         const ctx = canvas.getContext("2d");
-        const gameOverScreen = document.getElementById("gameOverScreen");
-        const retryButton = document.getElementById("retryButton");
-
         const images = {
             player: 'ship.png',
             chicken: 'chicken.png',
             bullet: 'bullet.png'
         };
 
-        const loadedImages = {};
+        let loadedImages = {};
         let imagesLoaded = 0;
-
+        let contract, provider, signer;
         let highScore = localStorage.getItem('highScore') || 0;
-        let canShoot = true; // Variable to track shooting ability
+        let canShoot = true;
 
         class Player {
             constructor() {
@@ -83,12 +148,8 @@
             }
 
             move() {
-                if (this.movingLeft && this.x > 0) {
-                    this.x -= this.speed;
-                }
-                if (this.movingRight && this.x < canvas.width - this.width) {
-                    this.x += this.speed;
-                }
+                if (this.movingLeft && this.x > 0) this.x -= this.speed;
+                if (this.movingRight && this.x < canvas.width - this.width) this.x += this.speed;
             }
 
             shoot() {
@@ -109,31 +170,91 @@
                 this.y = -this.size;
                 this.width = this.size;
                 this.height = this.size;
-                this.baseSpeed = 1; // Base speed
-                this.speed = this.baseSpeed; // Initial speed
+                this.baseSpeed = 1;
+                this.speed = this.baseSpeed;
             }
 
-            update() {
-                this.y += this.speed;
-            }
-
-            // Method to update speed based on score
-            updateSpeed(score) {
-                this.speed = this.baseSpeed * Math.pow(1.5, Math.floor(score / 10));
-            }
+            update() { this.y += this.speed; }
+            updateSpeed(score) { this.speed = this.baseSpeed * Math.pow(1.5, Math.floor(score / 1000)); }
         }
 
         let player, chickens, bullets, score, hearts, gameOver;
 
+        // Blockchain Functions
+        async function connectWallet() {
+            try {
+                if (!window.ethereum) {
+                    alert("Please install MetaMask!");
+                    return;
+                }
+
+                const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                provider = new ethers.providers.Web3Provider(window.ethereum);
+                signer = provider.getSigner();
+                contract = new ethers.Contract(contractAddress, contractABI, signer);
+
+                document.getElementById('connectWallet').textContent = 
+                    `Connected: ${accounts[0].slice(0,6)}...${accounts[0].slice(-4)}`;
+                document.getElementById('connectWallet').style.backgroundColor = "#4CAF50";
+                fetchLeaderboard();
+            } catch (error) {
+                console.error("Connection error:", error);
+                alert(`Wallet connection failed: ${error.message}`);
+            }
+        }
+
+        async function submitScoreToBlockchain(score) {
+            if (!contract) {
+                alert("Connect wallet first!");
+                return;
+            }
+
+            try {
+                document.getElementById('submitScore').disabled = true;
+                document.getElementById('submitScore').textContent = "Submitting...";
+                const tx = await contract.submitScore(score);
+                await tx.wait();
+                fetchLeaderboard();
+            } catch (error) {
+                console.error("Submission error:", error);
+                alert(`Submission failed: ${error.message}`);
+            } finally {
+                document.getElementById('submitScore').disabled = false;
+                document.getElementById('submitScore').textContent = "Submit Score";
+            }
+        }
+
+        async function fetchLeaderboard() {
+            if (!contract) return;
+            
+            try {
+                const scores = await contract.getTopScores(10);
+                const leaderboardList = document.getElementById('leaderboardList');
+                leaderboardList.innerHTML = '';
+
+                scores.forEach((score, index) => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <span>${index + 1}.</span>
+                        <span>${score.player.slice(0,6)}...${score.player.slice(-4)}</span>
+                        <span>${score.score}</span>
+                        <span>${new Date(score.timestamp * 1000).toLocaleDateString()}</span>
+                    `;
+                    leaderboardList.appendChild(li);
+                });
+            } catch (error) {
+                console.error("Leaderboard error:", error);
+            }
+        }
+
+        // Game Functions
         function preloadImages() {
             for (const key in images) {
                 loadedImages[key] = new Image();
                 loadedImages[key].src = images[key];
                 loadedImages[key].onload = () => {
                     imagesLoaded++;
-                    if (imagesLoaded === Object.keys(images).length) {
-                        resetGame(); // Start the game once all images are loaded
-                    }
+                    if (imagesLoaded === Object.keys(images).length) resetGame();
                 };
             }
         }
@@ -145,16 +266,13 @@
             score = 0;
             hearts = 5;
             gameOver = false;
-            gameOverScreen.style.display = "none";
+            document.getElementById('gameOverScreen').style.display = "none";
             gameLoop();
         }
 
         function spawnChicken() {
-            if (gameOver) return;
-            chickens.push(new Chicken());
+            if (!gameOver) chickens.push(new Chicken());
         }
-
-        setInterval(spawnChicken, 2000);
 
         function update() {
             if (gameOver) return;
@@ -164,57 +282,36 @@
             for (let c = chickens.length - 1; c >= 0; c--) {
                 const chicken = chickens[c];
                 chicken.update();
-
-                // Update chicken speed based on score
                 chicken.updateSpeed(score);
 
-                // Collision with player
-                if (
-                    player.x < chicken.x + chicken.width &&
-                    player.x + player.width > chicken.x &&
-                    player.y < chicken.y + chicken.height &&
-                    player.y + player.height > chicken.y
-                ) {
+                // Collision detection
+                if (checkCollision(player, chicken)) {
                     chickens.splice(c, 1);
                     hearts--;
-                    document.getElementById("damageSound").play(); // Play damage sound
+                    document.getElementById("damageSound").play();
                     if (hearts <= 0) endGame();
                     continue;
                 }
 
-                // Chicken escape
                 if (chicken.y > canvas.height) {
                     chickens.splice(c, 1);
                     hearts--;
-                    document.getElementById("damageSound").play(); // Play damage sound
+                    document.getElementById("damageSound").play();
                     if (hearts <= 0) endGame();
                 }
 
-                // Bullet collisions
                 for (let b = bullets.length - 1; b >= 0; b--) {
-                    const bullet = bullets[b];
-                    if (
-                        bullet.x < chicken.x + chicken.width &&
-                        bullet.x + bullet.width > chicken.x &&
-                        bullet.y < chicken.y + chicken.height &&
-                        bullet.y + bullet.height > chicken.y
-                    ) {
-                        chickens.splice(c, 1); // Remove the chicken
-                        bullets.splice(b, 1);   // Remove the bullet
-                        score++;                 // Increment the score
-                        document.getElementById("chickenHitSound").play(); // Play hit sound
-                        break; // Exit the bullet loop
+                    if (checkCollision(bullets[b], chicken)) {
+                        chickens.splice(c, 1);
+                        bullets.splice(b, 1);
+                        score = score + 100;
+                        document.getElementById("chickenHitSound").play();
+                        break;
                     }
                 }
             }
 
-            // Bullet movement
-            for (let b = bullets.length - 1; b >= 0; b--) {
-                bullets[b].y -= bullets[b].speed;
-                if (bullets[b].y < 0) {
-                    bullets.splice(b, 1);
-                }
-            }
+            bullets = bullets.filter(bullet => (bullet.y -= bullet.speed) > 0);
         }
 
         function draw() {
@@ -222,15 +319,12 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(loadedImages.player, player.x, player.y, player.width, player.height);
             
-            chickens.forEach(chicken => {
-                ctx.drawImage(loadedImages.chicken, chicken.x, chicken.y, chicken.width, chicken.height);
-            });
+            chickens.forEach(chicken => 
+                ctx.drawImage(loadedImages.chicken, chicken.x, chicken.y, chicken.width, chicken.height));
             
-            bullets.forEach(bullet => {
-                ctx.drawImage(loadedImages.bullet, bullet.x, bullet.y, bullet.width, bullet.height);
-            });
+            bullets.forEach(bullet => 
+                ctx.drawImage(loadedImages.bullet, bullet.x, bullet.y, bullet.width, bullet.height));
 
-            // Draw score and hearts on the canvas
             ctx.fillStyle = "white";
             ctx.font = "24px Arial";
             ctx.fillText(`Score: ${score}`, 10, 30);
@@ -241,31 +335,38 @@
         function gameLoop() {
             update();
             draw();
-            if (!gameOver) {
-                requestAnimationFrame(gameLoop);
-            }
+            if (!gameOver) requestAnimationFrame(gameLoop);
         }
 
         function endGame() {
             gameOver = true;
-            document.getElementById("gameOverSound").play(); // Play game over sound
+            document.getElementById("gameOverSound").play();
             if (score > highScore) {
                 highScore = score;
                 localStorage.setItem('highScore', highScore);
             }
-            gameOverScreen.style.display = "flex";
+            document.getElementById('gameOverScreen').style.display = "flex";
+            if (score > 0) submitScoreToBlockchain(score);
+            fetchLeaderboard();
         }
 
+        function checkCollision(rect1, rect2) {
+            return rect1.x < rect2.x + rect2.width &&
+                   rect1.x + rect1.width > rect2.x &&
+                   rect1.y < rect2.y + rect2.height &&
+                   rect1.y + rect1.height > rect2.y;
+        }
+
+        // Event Listeners
         window.addEventListener("keydown", (event) => {
+            if (gameOver) return;
             if (event.key === "ArrowLeft" || event.key === "a") player.movingLeft = true;
             if (event.key === "ArrowRight" || event.key === "d") player.movingRight = true;
-            if (event.key === " " && canShoot) { // Check if can shoot
+            if (event.key === " " && canShoot) {
                 bullets.push(player.shoot());
-                document.getElementById("shootSound").play(); // Play shoot sound
-                canShoot = false; // Set canShoot to false
-                setTimeout(() => {
-                    canShoot = true; // Reset canShoot after 0.3 seconds
-                }, 600); // 300 milliseconds
+                document.getElementById("shootSound").play();
+                canShoot = false;
+                setTimeout(() => canShoot = true, 600);
             }
         });
 
@@ -274,8 +375,8 @@
             if (event.key === "ArrowRight" || event.key === "d") player.movingRight = false;
         });
 
-        retryButton.addEventListener("click", resetGame);
-
+        document.getElementById("retryButton").addEventListener("click", resetGame);
+        setInterval(spawnChicken, 2000);
         preloadImages();
     </script>
 </body>
